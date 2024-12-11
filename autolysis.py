@@ -43,8 +43,7 @@ try:
     except UnicodeDecodeError:
         df = pd.read_csv(file_name, encoding="latin-1")
 
-    # api_key = os.environ.get("AIPROXY_TOKEN")
-    api_key = "eyJhbGciOiJIUzI1NiJ9.eyJlbWFpbCI6IjIyZjIwMDA3MTNAZHMuc3R1ZHkuaWl0bS5hYy5pbiJ9.fqrCmspjhPTZe5AvhHqVkpASOq78Y6IFFiharI6R0Go"
+    api_key = os.environ.get("AIPROXY_TOKEN")
     if not api_key:
         raise ValueError("ERROR: API key not found in environment variables")
 
