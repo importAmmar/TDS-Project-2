@@ -5,7 +5,9 @@
 #     "requests",
 #     "matplotlib",
 #     "seaborn",
-#     "numpy"
+#     "numpy",
+#     "scipy",
+#     "scikit-learn",
 # ]
 # ///
 
