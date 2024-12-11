@@ -9,6 +9,18 @@
 # ]
 # ///
 
+"""
+This script performs a comprehensive data analysis workflow, including:
+
+1. Reading a CSV dataset provided as a command-line argument.
+2. Conducting exploratory data analysis (EDA) to generate an overview of the data, including summary statistics, null values, outliers, etc.
+3. Using GPT-based APIs to suggest further analysis, generate Python code for the analysis, and create a story based on the findings.
+4. Visualizing key insights through recommended graphs and saving them as images. (ensuring the graphs are with titles, axis labels, legends, and annotations, and uses colors effectively where applicable)
+5. Producing a markdown report that combines the EDA, analysis, and visualizations into a cohesive narrative.
+
+The script dynamically handles errors in data reading and API interactions, ensures compatibility with different encodings, and provides user-friendly outputs to facilitate data storytelling.
+"""
+
 
 import sys
 import pandas as pd
@@ -20,79 +32,78 @@ import matplotlib
 import seaborn
 import numpy as np
 
-
+# Entry point to handle file input and API key
 try:
     file_name = sys.argv[1]
 
     try:
-      df = pd.read_csv(file_name)
-    except:
-      df = pd.read_csv(file_name, encoding="latin-1")
+        df = pd.read_csv(file_name)
+    except UnicodeDecodeError:
+        df = pd.read_csv(file_name, encoding="latin-1")
 
-    api_key = os.environ.get("AIPROXY_TOKEN")
-except:
-    print("ERROR: check if filename was passed as an argument, if the file is present in the same directory as the script, the file is in .csv format")
+    # api_key = os.environ.get("AIPROXY_TOKEN")
+    api_key = "eyJhbGciOiJIUzI1NiJ9.eyJlbWFpbCI6IjIyZjIwMDA3MTNAZHMuc3R1ZHkuaWl0bS5hYy5pbiJ9.fqrCmspjhPTZe5AvhHqVkpASOq78Y6IFFiharI6R0Go"
+    if not api_key:
+        raise ValueError("ERROR: API key not found in environment variables")
+
+except Exception as e:
+    print(f"ERROR: {e}")
+    sys.exit(1)
 
 
 # Functions
 def ask_gpt_4o_mini(data, count=0):
-  url = "https://aiproxy.sanand.workers.dev/openai/v1/chat/completions"
-  
-  headers = {
-      "Content-Type": "application/json",
-      "Authorization": f"Bearer {api_key}"
-  }
+    """Send a request to GPT-4o-mini and handle retries."""
+    url = "https://aiproxy.sanand.workers.dev/openai/v1/chat/completions"
 
-  response = requests.post(url, headers=headers, data=json.dumps(data))
-  if response.status_code == 200:
-      result = response.json()
-      return result
-  else:
-      if count < 3:
-         print("ERROR once")
-         ask_gpt_4o_mini(data, count+1)
-      else:
-        print(f"Error: {response.status_code}")
-        print(response.text)
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}"
+    }
+
+    try:
+        response = requests.post(url, headers=headers, data=json.dumps(data))
+        if response.status_code == 200:
+            return response.json()
+        else:
+            if count < 10:
+                print("Retrying request...")
+                return ask_gpt_4o_mini(data, count + 1)
+            else:
+                print(f"Error: {response.status_code}")
+                print(response.text)
+                return None
+    except requests.RequestException as e:
+        print(f"Request failed: {e}")
         return None
 
-
 def exec_code(code_string):
-  output = io.StringIO()
-  sys.stdout = output
+    """Execute Python code and return its output."""
+    output = io.StringIO()
+    sys.stdout = output
 
-  try:
-      # Execute the code
-      exec(code_string)
-  finally:
-      # Restore the original stdout
-      sys.stdout = sys.__stdout__
+    try:
+        exec(code_string)
+    finally:
+        sys.stdout = sys.__stdout__
 
-  # Get the output as a string
-  captured_output = output.getvalue()
-  output.close()
-
-  # Print the captured output
-  return captured_output
+    captured_output = output.getvalue()
+    output.close()
+    return captured_output
 
 def detect_iqr_outliers(df):
+    """Detect outliers in numerical columns using the IQR method."""
     outliers = {}
-
-    # Iterate over numerical columns to detect outliers
     numerical_cols = df.select_dtypes(include=[np.number]).columns.tolist()
 
     for col in numerical_cols:
-        # Calculate IQR for the column
         Q1 = df[col].quantile(0.25)
         Q3 = df[col].quantile(0.75)
         IQR = Q3 - Q1
         lower_bound = Q1 - 1.5 * IQR
         upper_bound = Q3 + 1.5 * IQR
 
-        # Identify outliers using the IQR method
         outliers_in_col = df[(df[col] < lower_bound) | (df[col] > upper_bound)]
-
-        # Count and percentage of outliers
         outlier_count = outliers_in_col.shape[0]
         outlier_percentage = (outlier_count / df.shape[0]) * 100
 
@@ -103,99 +114,86 @@ def detect_iqr_outliers(df):
 
     return outliers
 
-
 def make_prompt(file):
-  try:
-    df = pd.read_csv(file)
-  except:
-    df = pd.read_csv(file, encoding="latin-1")
+    """Generate a summary of the dataset for prompting LLMs."""
+    try:
+        df = pd.read_csv(file)
+    except UnicodeDecodeError:
+        df = pd.read_csv(file, encoding="latin-1")
 
-  shape = df.shape
-  columns = list(df.columns)
-  dtypes = list(df.dtypes.values)
-  describe = df.describe()
+    shape = df.shape
+    columns = list(df.columns)
+    dtypes = list(df.dtypes.values)
+    describe = df.describe()
 
+    # File Name
+    file_name = f"Filename: {file}\n"
 
-  # File Name
-  file_name = f"Filename: {file}\n"
+    # Data Overview
+    data_overview = f"Data Overview\nShape of the data: {shape[0]} rows and {shape[1]} columns\nColumns: "
+    data_overview += ", ".join([f"'{columns[ind]}' ({dtypes[ind]})" for ind in range(len(columns))])
 
-  # Data Overvew
-  data_overview = f'''Data Overview \nshape of the data: {shape[0]} rows and {shape[1]} columns \ncolumns : '''
+    # Descriptive Statistics
+    desc_numerical = f"Descriptive Statistics of numerical features (output of df.describe())\n{describe}\n"
 
-  for ind in range(len(columns)):
-    data_overview += f"'{columns[ind]}' ({dtypes[ind]}), "
+    # Descriptive Stats of Categorical Data
+    desc_categorical = "Descriptive statistics of categorical features\n"
+    for ind, col in enumerate(columns):
+        if dtypes[ind] == "object":
+            uniq_vals = len(df[col].unique())
+            if uniq_vals < 30:
+                values = df[col].value_counts().iloc[:5].index
+                counts = df[col].value_counts().iloc[:5].values
+                desc_categorical += f"'{col}': {uniq_vals} unique values => "
+                desc_categorical += ", ".join([f"('{values[j]}': {counts[j]})" for j in range(len(values))])
+            else:
+                desc_categorical += f"'{col}': {uniq_vals} unique values"
+            desc_categorical += "\n"
 
+    # Null Values
+    null_vals = "Null Values\n" + "\n".join(
+        [f"'{col}': {df[col].isna().sum()} null values" for col in columns if df[col].isna().sum() > 0]
+    )
 
-  # Descriptive Statistics of Numerical Features
-  desc_numerical = f'''\nDescriptive Statistics of numerical features (output of df.describe())  \n{describe}\n'''
+    # Outliers
+    outliers = detect_iqr_outliers(df)
+    outlier_txt = "Outlier Detection\n" + "\n".join(
+        [
+            f"'{col}': {data['count']} outliers detected, comprising {data['percentage']:.2f}% of total values"
+            for col, data in outliers.items() if data['count'] > 0
+        ]
+    )
 
-  # Descriptive Stats of Categorical Data
-  desc_categorical = f'''Descriptive statistics of categorical features  \n'''
+    # Create the prompt
+    prompt = "\n\n".join([file_name, data_overview, desc_numerical, desc_categorical, null_vals, outlier_txt])
+    return prompt
 
-
-  for ind in range(len(columns)):
-    col = columns[ind]
-    dtype = dtypes[ind]
-
-
-    if dtype == "object":
-      uniq_vals = len(df[col].unique())
-      if uniq_vals < 30:
-
-        desc_categorical += f"'{col}': {uniq_vals} unique values (most frequent values) => "
-
-        values = df[col].value_counts().iloc[:5].index
-        counts = df[col].value_counts().iloc[:5].values
-        for j in range(len(values)):
-          desc_categorical += f"('{values[j]}': {counts[j]}), "
-
-      else:
-        desc_categorical += f"'{col}': {uniq_vals} unique values"
-
-      desc_categorical += "\n"
-
-
-  # Null Values
-  null_vals = '''Null Values \n'''
-
-  null_cols = df.isna().sum().index
-  null_val_count = df.isna().sum().values
-  for i in range(len(columns)):
-    if null_val_count[i] > 0:
-      null_vals += f"'{null_cols[i]}': {null_val_count[i]} null values\n"
-
-
-
-  # Outliers
-  outliers = detect_iqr_outliers(df)
-  outlier_txt = '''Outlier Detection\n'''
-
-  # Print outlier summary
-  for col, data in outliers.items():
-      count = data['count']
-      percentage = data['percentage']
-      if count > 0:
-          outlier_txt += f"'{col}': {count} outliers detected, comprising {percentage:.2f}% of total values"
-
-      outlier_txt += "\n"
-
-
-  # Create the prompt
-  prompt = file_name + '\n' + data_overview + '\n' + desc_numerical + '\n' + desc_categorical + '\n' + null_vals + '\n' + outlier_txt
-
-  return prompt
-
-
+# Generate prompt and save the initial README
 prompt = make_prompt(file_name)
 with open("README.md", "w") as f:
-   f.write(prompt)
-## GPT for finding Analysis to perform
+    f.write(prompt)
 
+
+# Use GPT to generate analysis suggestions
 chat_history = [
-        {"role": "system", "content": '''You are a Brilliant Data Scientist, you take EDA of any dataset as input and offer 5 analysis (avoid correlation anallysis) essential to be performed on this dataset to create a comprehensive story of the data.
-        Keep in mind you output only the analysis names, that too in bullet points. eg.) 1. Time Series Analysis'''},
-        {"role": "user", "content": prompt},
-        ]
+    {
+        "role": "system",
+        "content": """
+You are a Brilliant Data Scientist. You take the Exploratory Data Analysis (EDA) of any dataset as input and suggest 5 essential analyses to create a comprehensive story of the data. 
+
+**Key Instructions**:
+- Avoid suggesting correlation analysis.
+- Your output should consist only of the analysis names, listed as bullet points.
+- Example: 
+    - 1. Time Series Analysis
+        """
+    },
+    {
+        "role": "user",
+        "content": f"EDA of the dataset:\n{prompt}"
+    },
+]
+
 
 data = {
     "model": "gpt-4o-mini",  # Specify the model
@@ -207,18 +205,31 @@ response = ask_gpt_4o_mini(data)
 analysis_to_perform = response['choices'][0]['message']["content"]
 
 
-## GPT for running the analysis
+# Generate analysis code
 chat_history = [
-        {"role": "system", "content": '''You are a Brilliant Data Scientist, you take EDA of any dataset as input and take a list of analysis to perform on the data and write python code to perform the analysis
-        Note1: you create code such that there are no image outputs, you create code such that running it using exec() should output the result of all the analysis, ie it should print each and every result
-        Note2: you just output code for what is asked you dont talk otherwise. eg.) Input: code to print hello world  Output:print("hello world")
-        Note3: The most important NOTE: code cant create any errors, try to take care of that using try, except blocks and keeping the code as simple as possible. Ensure u check you apply numeric analysis to numeric colums only
-        Note4: You have to try to access the df with utf first but if it raises error you need to use encoding latin-1
-        
-        '''},
-        {"role": "user", "content": prompt},
-        {"role": "user", "content": "analysis to perform:\n" + analysis_to_perform},
-        ]
+    {
+        "role": "system",
+        "content": """
+You are a Brilliant Data Scientist. You take the Exploratory Data Analysis (EDA) of any dataset as input along with a list of analyses to perform on the data and output Python code to execute these analyses.
+- **Note 1**: The code you provide must not generate image outputs. Instead, the code should print all results when executed using `exec()`.
+- **Note 2**: Your response should contain only the code requested, without any additional commentary. 
+    - Example: **Input**: "code to print hello world" | **Output**: `print("hello world")`
+- **Note 3**: Ensure the code is error-free by incorporating `try` and `except` blocks where necessary, keeping it simple and robust.
+- **Note 4**: Handle the dataset file with the following logic:
+    - First, attempt to load the dataset using UTF-8 encoding.
+    - If a `UnicodeDecodeError` occurs, fallback to using `latin-1` encoding.
+- **Note 5**: Ensure numeric analyses are applied only to numeric columns in the dataset.
+        """
+    },
+    {
+        "role": "user",
+        "content": f"EDA of the dataset:\n{prompt}"
+    },
+    {
+        "role": "user",
+        "content": f"Analysis to perform:\n{analysis_to_perform}"
+    },
+]
 
 data = {
     "model": "gpt-4o-mini",  # Specify the model
@@ -229,21 +240,33 @@ data = {
 response = ask_gpt_4o_mini(data)
 code = response['choices'][0]['message']["content"]
 clean_code = code.replace("`", "").replace("python", "")
-print(clean_code)
 analysis_output = exec_code(clean_code)
 
 
 ## GPT for creating initial story
 chat_history = [
-        {"role": "system", "content": '''You are a Brilliant Data Scientist, you take EDA of a dataset, and a set of output analysis performed on it as input and create a story out of it.
-        Note1: You can choose to ignore if some result of analysis is not avaliable
-        Note2: You create a story of the the dataset explaining about it and give insights.
-        Note3: You will output in .md format only. The output you give will be saved as a .md file format
-        '''},
-        {"role": "user", "content": "The EDA of the dataset\n" +prompt},
-        {"role": "user", "content": "analysis we tried to perform perform:\n" + analysis_to_perform},
-        {"role": "user", "content": "The output of the analysis:\n" + analysis_output},
-        ]
+    {
+        "role": "system",
+        "content": """
+You are a Brilliant Data Scientist with expertise in data storytelling. You take the Exploratory Data Analysis (EDA) of a dataset and the results of various analyses as input to create a compelling story that explains the dataset and provides meaningful insights.
+- Note 1: Ignore any analysis that does not yield results or is unavailable.
+- Note 2: The story should integrate the dataset's characteristics, the analysis performed, and any significant findings to provide a clear and engaging narrative.
+- Note 3: Output must be in Markdown format (`.md`) and structured for readability and professional presentation.
+        """
+    },
+    {
+        "role": "user",
+        "content": f"The EDA of the dataset:\n{prompt}"
+    },
+    {
+        "role": "user",
+        "content": f"The analyses we tried to perform:\n{analysis_to_perform}"
+    },
+    {
+        "role": "user",
+        "content": f"The output of the analyses:\n{analysis_output}"
+    },
+]
 
 data = {
     "model": "gpt-4o-mini",  # Specify the model
@@ -257,14 +280,27 @@ dataset_story = response['choices'][0]['message']["content"]
 
 ## GPT for finding important graphs for the story
 chat_history = [
-        {"role": "system", "content": '''You are a Brilliant Data Scientist, you take EDA of a dataset, and a set of output analysis performed on it and a story of the dataset based on the analysis as input and output the name of 3 graphs (avoid heatmaps) we should create to enhance the story.
-        Note: Keep in mind you output only the graph names, that too in bullet points.
-        '''},
-        {"role": "user", "content": "The EDA of the dataset\n" +prompt},
-        {"role": "user", "content": "analysis we tried to perform perform:\n" + analysis_to_perform},
-        {"role": "user", "content": "The output of the analysis:\n" + analysis_output},
-        {"role": "user", "content": "The story of the dataset:\n" + dataset_story},
-        ]
+    {
+        "role": "system",
+        "content": """
+You are a Brilliant Data Scientist. You take the following as input:
+- The Exploratory Data Analysis (EDA) of a dataset.
+- A set of output analyses performed on the dataset.
+- A story derived from the dataset based on the analysis.
+
+Your task is to suggest **3 graph types** to enhance the storytelling. 
+
+**Key Instructions**:
+- Avoid suggesting heatmaps.
+- Output only the names of the graphs, formatted as a bullet-point list.
+"""
+    },
+    {"role": "user", "content": f"The EDA of the dataset:\n{prompt}"},
+    {"role": "user", "content": f"Analysis we tried to perform:\n{analysis_to_perform}"},
+    {"role": "user", "content": f"The output of the analysis:\n{analysis_output}"},
+    {"role": "user", "content": f"The story of the dataset:\n{dataset_story}"},
+]
+
 
 data = {
     "model": "gpt-4o-mini",  # Specify the model
@@ -278,16 +314,32 @@ graph_names = response['choices'][0]['message']["content"]
 
 ## GPT for creating graphs
 chat_history = [
-        {"role": "system", "content": '''You are a Brilliant Data Scientist, you take EDA of a dataset, and the name of 3 graphs you need to create, and you output python code to create these 3 graphs and save them as .png
-        Note1: you create code such that running it using exec() should save all 3 images in .png format. name of the files fig1.png, fig2.png, fig3.png
-        Note2: you just output code for what is asked you dont talk otherwise. eg.) Input: code to print hello world  Output:print("hello world")
-        Note3: The most important Note: The code cant create any errors, try to take care of that using try, except blocks
-        Note4: Try to make the graph readable if there are many values on x or y axis try to take the most importanats in this case.
-        Note5: You have to try to access the df with utf first but if it raises error you need to use encoding latin-1
-        '''},
-        {"role": "user", "content": "The EDA of the dataset\n" +prompt},
-        {"role": "user", "content": "The name of the graphs:\n" + graph_names},
-        ]
+    {
+        "role": "system",
+        "content": """
+You are a Brilliant Data Scientist. You take the following as input:
+- The Exploratory Data Analysis (EDA) of a dataset.
+- The names of 3 graphs to be created.
+
+Your task is to output Python code to generate these graphs and save them as PNG files. 
+
+**Key Instructions**:
+1. The code should:
+   - Save all 3 images in `.png` format.
+   - Use the file names `fig1.png`, `fig2.png`, and `fig3.png`.
+2. **Code-only Output**: Do not include any explanations or extra text. For example:
+   - Input: Code to print hello world
+   - Output: `print("hello world")`
+3. **Error Handling**:
+   - Ensure the code handles errors gracefully using `try-except` blocks.
+   - Attempt to access the dataset using UTF-8 encoding first; fallback to Latin-1 if UTF-8 fails.
+4. **Graph Readability**:
+   - If the axes have many values, focus on the most significant ones to make the graph readable.
+"""
+    },
+    {"role": "user", "content": f"The EDA of the dataset:\n{prompt}"},
+    {"role": "user", "content": f"The name of the graphs:\n{graph_names}"},
+]
 
 data = {
     "model": "gpt-4o-mini",  # Specify the model
@@ -298,7 +350,6 @@ data = {
 response = ask_gpt_4o_mini(data)
 graph_code = response['choices'][0]['message']["content"]
 clean_graph_code = graph_code.replace("`", "").replace("python", "")
-print(clean_graph_code)
 exec(clean_graph_code)
 
 
@@ -325,4 +376,3 @@ clean_final_story = final_story.replace("markdown", "").replace("`", "")
 # Saving the story in .md file format
 with open("README.md", "w") as f:
   f.write(clean_final_story)
-
